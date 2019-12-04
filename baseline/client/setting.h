@@ -3,10 +3,9 @@
 
 #define FAIL -1
 
+#define DEFAULT_DOMAIN_NAME "www.alice.com"
 #define DEFAULT_PORT_NUMBER 5555
-#define DEFAULT_CERT_PATH "../../certs/cert.pem"
-#define DEFAULT_KEY_PATH "../../certs/priv.key"
 #define DEFAULT_LOG_DIRECTORY "logs"
-
+#define DEFAULT_NUM_THREADS 1
 
 #endif /* __SETTING_H__ */

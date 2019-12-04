@@ -21,6 +21,7 @@ typedef struct info
 {
   SSL_CTX *ctx;
   const char *log_prefix;
+  client_t *client;
 } info_t;
 
 struct event_base *g_ebase[MAX_THREADS];

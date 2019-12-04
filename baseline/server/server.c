@@ -12,21 +12,18 @@
 #include <sys/stat.h>
 #include <getopt.h>
 
-#include <event2/listener.h>
+#include <event.h>
 #include <debug.h>
 #include <defines.h>
 #include <logger.h>
 #include "server.h"
 
-static const char message[] = "Hello, World!\n";
+static int init = 0;
+static void udp_cb(const int fd, short int event, void *arg);
+int open_listener(int port);
 
-static void listener_cb(struct evconnlistener *, evutil_socket_t,
-    struct sockaddr *, int socklen, void *);
-static void conn_readcb(struct bufferevent *, void *);
-static void conn_eventcb(struct bufferevent *, short, void *);
-static void signal_cb(evutil_socket_t, short, void *);
-
-int usage(const char *pname)
+int 
+usage(const char *pname)
 {
   emsg(">> Usage: %s -p <port> -c <certificate file> -k <private key file> -l <log file>", pname);
   emsg(">> Example: %s -p 5555 ../certs/cert.pem -k ../certs/priv.key -l log", pname);
@@ -37,19 +34,17 @@ int
 main(int argc, char **argv)
 {
 	struct event_base *base;
-	struct evconnlistener *listener;
 	struct event *signal_event;
   
-	struct sockaddr_in sin;
-
   SSL_CTX *ctx;
   info_t *info;
   
-  int c, port;
+  int c, port, fd;
   const char *pname;
   const char *log_prefix;
   const char *cert;
   const char *key;
+  struct event udp_event;
 
   pname = argv[0];
   port = DEFAULT_PORT_NUMBER;
@@ -99,43 +94,21 @@ main(int argc, char **argv)
   imsg("Private Key: %s", key);
 
   initialization();
+  SSL_library_init();
+  OpenSSL_add_all_algorithms();
+
   ctx = init_server_ctx(cert, key);
   info = (info_t *) malloc(sizeof(info_t));
-  memset(info, 0x0, sizeof(info));
+  memset(info, 0x0, sizeof(info_t));
   info->ctx = ctx;
   info->log_prefix = log_prefix;
 
-	base = event_base_new();
-	if (!base) {
-		emsg("Could not initialize libevent!");
-		return 1;
-	}
+  fd = open_listener(port);
+  event_init();
+  event_set(&udp_event, fd, EV_READ|EV_PERSIST, udp_cb, info);
+  event_add(&udp_event, 0);
 
-	memset(&sin, 0, sizeof(sin));
-	sin.sin_family = AF_INET;
-	sin.sin_port = htons(port);
-
-	listener = evconnlistener_new_bind(base, listener_cb, (void *)info,
-	    LEV_OPT_REUSEABLE|LEV_OPT_CLOSE_ON_FREE|LEV_OPT_CLOSE_ON_EXEC|LEV_OPT_THREADSAFE, 
-      -1, (struct sockaddr*)&sin, sizeof(sin));
-
-	if (!listener) {
-		emsg("Could not create a listener!");
-		return 1;
-	}
-
-	signal_event = evsignal_new(base, SIGINT, signal_cb, (void *)base);
-
-	if (!signal_event || event_add(signal_event, NULL)<0) {
-		emsg("Could not create/add a signal event!");
-		return 1;
-	}
-
-	event_base_dispatch(base);
-
-	evconnlistener_free(listener);
-	event_free(signal_event);
-	event_base_free(base);
+  event_dispatch();
 
   finalization();
 
@@ -144,180 +117,138 @@ main(int argc, char **argv)
 }
 
 static void
-listener_cb(struct evconnlistener *listener, evutil_socket_t fd,
-    struct sockaddr *sa, int socklen, void *user_data)
+udp_cb(const int fd, short int event, void *user_data)
 {
-  fstart();
+  fstart("fd: %d, event: %d, user_data: %p", fd, event, user_data);
   client_t *client;
-  int idx;
   SSL *ssl;
   BIO *rbio, *wbio;
-	struct bufferevent *bev;
-  struct event_base *base;
+  struct sockaddr_in sin;
+  socklen_t sz;
+  unsigned char rbuf[BUF_SIZE];
+  unsigned char wbuf[BUF_SIZE];
+  int rlen, wlen;
 	info_t *info = (info_t *)user_data;
-
-  if (evutil_make_socket_nonblocking(fd) < 0)
-  {
-    emsg("Failed to set the socket to non-blocking");
-    abort();
-  }
-  imsg("Set the socket to non-blocking");
-
-  client = init_client_ctx();
-
-  struct stat st = {0};
-  if (stat(DEFAULT_LOG_DIRECTORY, &st) < 0)
-  {
-    mkdir(DEFAULT_LOG_DIRECTORY, 0755);
-  }
-
-  dmsg("info->log_prefix: %s", info->log_prefix);
-  if (info->log_prefix)
-  {
-     snprintf(client->log_file, MAX_FILE_NAME_LEN, "%s/%s_%d", DEFAULT_LOG_DIRECTORY, 
-         info->log_prefix, fd);
-     dmsg("Client's log file prefix: %s", client->log_file);
-  }
-
-  ssl = SSL_new(info->ctx);
-  if (!ssl)
-  {
-    emsg("SSL initialization error");
-    abort();
-  }
-  imsg("SSL initialization success: client->ssl: %p", ssl);
-
-  rbio = BIO_new(BIO_s_mem());
-  if (!rbio)
-  {
-    emsg("BIO initialization error");
-    abort();
-  }
-  imsg("BIO initialization success");
-
-  wbio = BIO_new(BIO_s_mem());
-  if (!wbio)
-  {
-    emsg("BIO initialization error");
-    abort();
-  }
-  imsg("BIO initialization success");
-
-  SSL_set_bio(ssl, rbio, wbio);
-  SSL_set_accept_state(ssl);
-  client->ssl = ssl;
-
-  base = get_event_base(&idx);
-  if (!base)
-  {
-    emsg("No event base is assigned");
-    return;
-  }
-  client->idx = idx;
-
-	bev = bufferevent_socket_new(base, fd, BEV_OPT_CLOSE_ON_FREE);
-	if (!bev) {
-		fprintf(stderr, "Error constructing bufferevent!");
-		return;
-	}
-	bufferevent_setcb(bev, conn_readcb, NULL, conn_eventcb, client);
-	bufferevent_enable(bev, EV_READ);
-  event_base_dispatch(base);
-
-  ffinish();
-}
-
-static void
-conn_readcb(struct bufferevent *bev, void *user_data)
-{
-  fstart();
-  client_t *client;
-  SSL *ssl;
-  size_t rlen, wlen;
-  uint8_t rbuf[BUF_SIZE] = {0, };
-  uint8_t wbuf[BUF_SIZE] = {0, };
-
-  client = (client_t *)user_data;
-  ssl = client->ssl;
-
-  rlen = bufferevent_read(bev, rbuf, BUF_SIZE);
-  if (rlen > 0)
-  {
-    imsg("no error during reading");
-    if (SSL_is_init_finished(client->ssl))
-    {
-      dmsg("client->log_file: %s", client->log_file);
-      dmsg("after the TLS session is established");
-    }
-    else
-    {
-      dmsg("before the TLS session is established");
-      dmsg("receive the TLS message from a client: %ld bytes", rlen);
-      BIO_write(SSL_get_rbio(ssl), rbuf, rlen);
-      dmsg("SSL_do_handshake: client->ssl: %p", ssl);
-      SSL_do_handshake(ssl);
-      wlen = BIO_read(SSL_get_wbio(ssl), wbuf, BUF_SIZE);
-      dmsg("length to write: %ld", wlen);
-      if (wlen > 0)
-        bufferevent_write(bev, wbuf, wlen);
-    }
-  }
-  ffinish();
-}
-
-static void
-conn_eventcb(struct bufferevent *bev, short events, void *user_data)
-{
-  fstart();
-  int idx;
-  client_t *client;
-	if (events & BEV_EVENT_EOF) {
-		imsg("Connection closed.");
-	} else if (events & BEV_EVENT_ERROR) {
-		imsg("Got an error on the connection: %s",
-		    strerror(errno));/*XXX win32*/
-	}
-	/* None of the other events can happen here, since we haven't enabled
-	 * timeouts */
+  client = info->client;
+  imsg("info->client: %p", info->client);
   
-  client = (client_t *)user_data;
-  idx = client->idx;
-
-	bufferevent_free(bev);
-  free_client_ctx(client);
-
-  ffinish();
-}
-
-static void
-signal_cb(evutil_socket_t sig, short events, void *user_data)
-{
-  fstart("sig: %p, events: %d, user_data: %p", sig, events, user_data);
-  int i;
-	struct event_base *base = user_data;
-	struct timeval delay = {1, 0};
-
-	imsg("Caught an interrupt signal; exiting cleanly in one second.");
-
-	event_base_loopexit(base, &delay);
-
-  for (i=0; i<MAX_THREADS; i++)
+  if (!client)
   {
-    event_base_free(g_ebase[i]);
-    g_ebase[i] = NULL;
-    occupied[i] = 0;
+    imsg("Initialize the client context");
+    client = init_client_ctx();
+
+    struct stat st = {0};
+    if (stat(DEFAULT_LOG_DIRECTORY, &st) < 0)
+    {
+      mkdir(DEFAULT_LOG_DIRECTORY, 0755);
+    }
+
+    dmsg("info->log_prefix: %s", info->log_prefix);
+    if (info->log_prefix)
+    {
+      snprintf(client->log_file, MAX_FILE_NAME_LEN, "%s/%s_%d", DEFAULT_LOG_DIRECTORY, 
+          info->log_prefix, fd);
+      dmsg("Client's log file prefix: %s", client->log_file);
+    }
+
+    ssl = SSL_new(info->ctx);
+    if (!ssl)
+    {
+      emsg("SSL initialization error");
+      abort();
+    }
+    imsg("SSL initialization success: client->ssl: %p", ssl);
+
+    rbio = BIO_new(BIO_s_mem());
+    if (!rbio)
+    {
+      emsg("BIO initialization error");
+      abort();
+    }
+    imsg("BIO initialization success");
+
+    wbio = BIO_new(BIO_s_mem());
+    if (!wbio)
+    {
+      emsg("BIO initialization error");
+      abort();
+    }
+    imsg("BIO initialization success");
+
+    SSL_set_bio(ssl, rbio, wbio);
+    SSL_set_accept_state(ssl);
+    client->ssl = ssl;
+    info->client = client;
+    imsg("Initialize the client context success");
+    sleep(5);
+  }
+  else
+  {
+    ssl = client->ssl;
+    rlen = recvfrom(fd, &rbuf, BUF_SIZE, 0, (struct sockaddr *) &sin, &sz);
+    if (rlen == -1)
+    {
+      emsg("recvfrom error");
+      event_loopbreak();
+    }
+    imsg("rlen: %d", rlen);
+
+    if (rlen > 0)
+    {
+      imsg("no error during reading");
+
+      if (SSL_is_init_finished(ssl))
+      {
+        imsg("DTLS session is established");
+      }
+      else
+      {
+        BIO_write(SSL_get_rbio(ssl), rbuf, rlen);
+        SSL_do_handshake(ssl);
+        wlen = BIO_read(SSL_get_wbio(ssl), wbuf, BUF_SIZE);
+        dmsg("length to write: %ld", wlen);
+        if (wlen > 0)
+        {
+          if (sendto(fd, wbuf, wlen, 0, (struct sockaddr *) &sin, sz) == -1)
+          {
+            emsg("sendto error");
+            event_loopbreak();
+          }
+        }
+      }
+    }
   }
   ffinish();
 }
 
-SSL_CTX *init_server_ctx(const char *cert, const char *key)
+int open_listener(int port)
+{
+  int sock;
+  struct sockaddr_in sin;
+  sock = socket(AF_INET, SOCK_DGRAM, 0);
+  memset(&sin, 0, sizeof(sin));
+  sin.sin_family = AF_INET;
+  sin.sin_addr.s_addr = INADDR_ANY;
+  sin.sin_port = htons(port);
+
+  if (bind(sock, (struct sockaddr *)&sin, sizeof(sin)))
+  {
+    emsg("bind error");
+    exit(1);
+  }
+
+  return sock;
+}
+
+SSL_CTX *
+init_server_ctx(const char *cert, const char *key)
 {
   fstart("cert: %p, key: %p", cert, key);
   SSL_CTX *ret;
   SSL_METHOD *method;
   EC_KEY *ecdh;
 
-  method = (SSL_METHOD *) DTLSv1_2_server_method();
+  method = (SSL_METHOD *) DTLS_server_method();
   ret = SSL_CTX_new(method);
 
   SSL_CTX_set_cipher_list(ret, "ECDHE-ECDSA-AES128-GCM-SHA256");
