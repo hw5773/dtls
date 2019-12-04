@@ -180,10 +180,10 @@ udp_cb(const int fd, short int event, void *user_data)
     client->ssl = ssl;
     info->client = client;
     imsg("Initialize the client context success");
-    sleep(5);
   }
   else
   {
+    rlen = wlen = -1;
     ssl = client->ssl;
     rlen = recvfrom(fd, &rbuf, BUF_SIZE, 0, (struct sockaddr *) &sin, &sz);
     if (rlen == -1)
