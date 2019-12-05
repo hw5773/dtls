@@ -202,13 +202,15 @@ udp_cb(const int fd, short int event, void *user_data)
     {
       end = clock();
       imsg("DTLS session is established: %lf ms", ((double) (end - start) * 1000)/CLOCKS_PER_SEC);
+      SSL_shutdown(ssl);
+      free_client_ctx(info->client);
+      info->client = NULL;
     }
     else
     {
       BIO_write(SSL_get_rbio(ssl), rbuf, rlen);
       SSL_do_handshake(ssl);
       wlen = BIO_read(SSL_get_wbio(ssl), wbuf, BUF_SIZE);
-      dmsg("length to write: %ld", wlen);
       if (wlen > 0)
       {
         if (sendto(fd, wbuf, wlen, 0, (struct sockaddr *) &sin, sz) == -1)

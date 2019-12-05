@@ -26,6 +26,7 @@
 
 typedef struct info_st
 {
+  SSL_CTX *ctx;
   const char *domain;
   int port;
 } info_t;
@@ -33,6 +34,7 @@ typedef struct info_st
 SSL_CTX *ctx;
 
 void *run(void *data);
+int open_listener(int port);
 int open_connection(const char *domain, int port);
 SSL_CTX* init_client_ctx(void);
 void load_certificates(SSL_CTX* ctx, char* cert_file, char* key_file);
@@ -41,28 +43,38 @@ int http_make_request(uint8_t *domain, uint32_t dlen, uint8_t *content,
 		uint32_t clen, uint8_t *msg, uint32_t *mlen);
 int http_parse_response(uint8_t *msg, uint32_t mlen);
 static int char_to_int(uint8_t *str, uint32_t slen);
+static void udp_cb(const int fd, short event, void *arg);
+pthread_t thread[num_of_threads];
+pthread_attr_t attr;
+void *status;
 
 int 
 usage(const char *pname)
 {
   emsg(">> Usage: %s -d <domain> -p <port> -l <log file name>", pname);
-  emsg(">> Example: %s -d www.alice.com -p 5555 -l log", pname);
+  emsg(">> Example: %s -d www.alice.com -p 5555 -l 5556", pname);
   exit(1);
 }
 
 int 
 main(int argc, char *argv[])
 {   
-	int i, rc, num_of_threads;
-  int c, port;
+	int i, rc, num_of_threads, fd;
+  int c, cport, lport;
   const char *pname;
   const char *domain;
   const char *lname;
-  info_t info;
+  SSL_CTX *ctx;
+  info_t *info;
+
+  struct event_base *base;
+  struct event udp_event;
   
   pname = argv[0];
   domain = DEFAULT_DOMAIN_NAME;
-  port = DEFAULT_PORT_NUMBER;
+  lport = DEFAULT_LISTEN_PORT_NUMBER;
+  cport = DEFAULT_CONNECT_PORT_NUMBER;
+  lport = 
   num_of_threads = DEFAULT_NUM_THREADS;
   lname = NULL;
 
@@ -72,12 +84,12 @@ main(int argc, char *argv[])
     static struct option long_options[] = {
       {"domain", required_argument, 0, 'd'},
       {"port", required_argument, 0, 'p'}, 
-      {"log", required_argument, 0, 'l'},
+      {"listen-port", required_argument, 0, 'l'},
       {"threads", required_argument, 0, 't'},
       {0, 0, 0, 0}
     };
 
-    c = getopt_long(argc, argv, "d:p:l:0", long_options, &option_index);
+    c = getopt_long(argc, argv, "d:p:l:t:0", long_options, &option_index);
 
     if (c == -1)
       break;
@@ -85,7 +97,7 @@ main(int argc, char *argv[])
     switch (c)
     {
       case 'l':
-        lname = optarg;
+        lport = atoi(optarg);
         break;
       case 'd':
         domain = optarg;
@@ -101,25 +113,35 @@ main(int argc, char *argv[])
     }
   }
 
-  imsg("Log File Name: %s", lname);
   imsg("Domain: %s", domain);
-  imsg("Port: %d", port);
+  imsg("Listen Port: %d", lport);
+  imsg("Connection Port: %d", cport);
   imsg("Number of Threads: %d", num_of_threads);
 
-  info.domain = domain;
-  info.port = port;
-
+  initialization();
   SSL_library_init();
   OpenSSL_add_all_algorithms();
 
-	pthread_t thread[num_of_threads];
-	pthread_attr_t attr;
-	pthread_attr_init(&attr);
-	pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_JOINABLE);
-	void *status;
+  fd = open_listener(lport);
+  base = event_init();
+  info = (info_t *)malloc(sizeof(info_t));
+  memset(info, 0x0, sizeof(info_t));
 
+  SSL_library_init();
+  OpenSSL_add_all_algorithms();
 	ctx = init_client_ctx();
 	load_ecdh_params(ctx);
+
+	pthread_attr_init(&attr);
+	pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_JOINABLE);
+
+  info->ctx = ctx;
+  info->domain = domain;
+  info->port = cport;
+
+  event_set(&udp_event, fd, EV_READ|EV_PERSIST, udp_cb, info);
+  event_add(&udp_event, 0);
+  event_dispatch();
 
 	for (i = 0; i < num_of_threads; i++) {
 		rc = pthread_create(&thread[i], &attr, run, &info);
@@ -245,7 +267,34 @@ err:
 	return NULL;
 }
 
-int open_connection(const char *domain, int port)
+static void
+udp_cb(const int fd, short event, void *user_data)
+{
+
+}
+
+int 
+open_listener(int port)
+{
+  int sock;
+  struct sockaddr_in sin;
+  sock = socket(AF_INET, SOCK_DGRAM, 0);
+  memset(&sin, 0, sizeof(sin));
+  sin.sin_family = AF_INET;
+  sin.sin_addr.s_addr = INADDR_ANY;
+  sin.sin_port = htons(port);
+
+  if (bind(sock, (struct sockaddr *)&sin, sizeof(sin)))
+  {
+    emsg("bind error");
+    exit(1);
+  }
+
+  return sock;
+}
+
+int 
+open_connection(const char *domain, int port)
 {
   fstart("domain: %s, port: %d", domain, port);
   int sd, ret, sndbuf, rcvbuf, optlen;
