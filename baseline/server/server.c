@@ -20,6 +20,8 @@
 
 static int init = 0;
 static void udp_cb(const int fd, short int event, void *arg);
+static clock_t start = 0;
+static clock_t end = 0;
 int open_listener(int port);
 
 int 
@@ -34,7 +36,6 @@ int
 main(int argc, char **argv)
 {
 	struct event_base *base;
-	struct event *signal_event;
   
   SSL_CTX *ctx;
   info_t *info;
@@ -104,7 +105,7 @@ main(int argc, char **argv)
   info->log_prefix = log_prefix;
 
   fd = open_listener(port);
-  event_init();
+  base = event_init();
   event_set(&udp_event, fd, EV_READ|EV_PERSIST, udp_cb, info);
   event_add(&udp_event, 0);
 
@@ -134,6 +135,7 @@ udp_cb(const int fd, short int event, void *user_data)
   
   if (!client)
   {
+    start = clock();
     imsg("Initialize the client context");
     client = init_client_ctx();
 
@@ -181,39 +183,38 @@ udp_cb(const int fd, short int event, void *user_data)
     info->client = client;
     imsg("Initialize the client context success");
   }
-  else
+  
+  rlen = wlen = -1;
+  ssl = client->ssl;
+  rlen = recvfrom(fd, &rbuf, BUF_SIZE, 0, (struct sockaddr *) &sin, &sz);
+  if (rlen == -1)
   {
-    rlen = wlen = -1;
-    ssl = client->ssl;
-    rlen = recvfrom(fd, &rbuf, BUF_SIZE, 0, (struct sockaddr *) &sin, &sz);
-    if (rlen == -1)
+    emsg("recvfrom error");
+    event_loopbreak();
+  }
+  imsg("rlen: %d", rlen);
+
+  if (rlen > 0)
+  {
+    imsg("no error during reading");
+
+    if (SSL_is_init_finished(ssl))
     {
-      emsg("recvfrom error");
-      event_loopbreak();
+      end = clock();
+      imsg("DTLS session is established: %lf ms", ((double) (end - start) * 1000)/CLOCKS_PER_SEC);
     }
-    imsg("rlen: %d", rlen);
-
-    if (rlen > 0)
+    else
     {
-      imsg("no error during reading");
-
-      if (SSL_is_init_finished(ssl))
+      BIO_write(SSL_get_rbio(ssl), rbuf, rlen);
+      SSL_do_handshake(ssl);
+      wlen = BIO_read(SSL_get_wbio(ssl), wbuf, BUF_SIZE);
+      dmsg("length to write: %ld", wlen);
+      if (wlen > 0)
       {
-        imsg("DTLS session is established");
-      }
-      else
-      {
-        BIO_write(SSL_get_rbio(ssl), rbuf, rlen);
-        SSL_do_handshake(ssl);
-        wlen = BIO_read(SSL_get_wbio(ssl), wbuf, BUF_SIZE);
-        dmsg("length to write: %ld", wlen);
-        if (wlen > 0)
+        if (sendto(fd, wbuf, wlen, 0, (struct sockaddr *) &sin, sz) == -1)
         {
-          if (sendto(fd, wbuf, wlen, 0, (struct sockaddr *) &sin, sz) == -1)
-          {
-            emsg("sendto error");
-            event_loopbreak();
-          }
+          emsg("sendto error");
+          event_loopbreak();
         }
       }
     }
@@ -287,6 +288,8 @@ init_server_ctx(const char *cert, const char *key)
     emsg("SSL_CTX_set_tmp_ecdh error");
     abort();
   }
+
+  SSL_CTX_set_session_cache_mode(ret, SSL_SESS_CACHE_BOTH);
 
   ffinish();
   return ret;

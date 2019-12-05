@@ -31,6 +31,8 @@ typedef struct info_st
 } info_t;
 
 SSL_CTX *ctx;
+static clock_t start = 0;
+static clock_t end = 0;
 
 void *run(void *data);
 int open_connection(const char *domain, int port);
@@ -196,12 +198,14 @@ void *run(void *data)
 
 	imsg("PROGRESS: DTLS Handshake Start");
 
+  start = clock();
 	if ((ret = SSL_connect(ssl)) < 0) {
 		emsg("ret after SSL_connect: %d", ret);
 		ERR_print_errors_fp(stderr);
 		goto err;
 	} else {
-    imsg("Connected with %s\n", SSL_get_cipher(ssl));
+    end = clock();
+    imsg("Connected with %s: %lf ms", SSL_get_cipher(ssl), ((double)(end - start) * 1000)/CLOCKS_PER_SEC );
     SSL_shutdown(ssl);
 	}
 
