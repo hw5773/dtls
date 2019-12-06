@@ -10,10 +10,16 @@
 #include <openssl/evp.h>
 #include <openssl/err.h>
 #include <sys/time.h>
+#ifndef _WIN32
+#include <netinet/in.h>
+#ifdef _XOPEN_SOURCE_EXTENDED
+  #include <arpa/inet.h>
+#endif
 #include <sys/socket.h>
+#endif
+#include <sys/stat.h>
+
 #include <pthread.h>
-#include <openssl/opensslv.h>
-#include <errno.h>
 #include <limits.h>
 #include <getopt.h>
 
@@ -39,7 +45,7 @@ int http_make_request(uint8_t *domain, uint32_t dlen, uint8_t *content,
 		uint32_t clen, uint8_t *msg, uint32_t *mlen);
 int http_parse_response(uint8_t *msg, uint32_t mlen);
 static int char_to_int(uint8_t *str, uint32_t slen);
-static void udp_cb(const int fd, short event, void *arg);
+static void udp_cb(const int fd, short int event, void *arg);
 
 int 
 usage(const char *pname)
@@ -113,20 +119,16 @@ main(int argc, char *argv[])
   SSL_library_init();
   OpenSSL_add_all_algorithms();
 
-  fd = open_listener(lport);
-  base = event_init();
-  info = (info_t *)malloc(sizeof(info_t));
-  memset(info, 0x0, sizeof(info_t));
-
-  SSL_library_init();
-  OpenSSL_add_all_algorithms();
 	ctx = init_client_ctx();
 	load_ecdh_params(ctx);
-
+  info = (info_t *)malloc(sizeof(info_t));
+  memset(info, 0x0, sizeof(info_t));
   info->ctx = ctx;
   info->domain = domain;
   info->port = cport;
 
+  fd = open_listener(lport);
+  base = event_init();
   event_set(&udp_event, fd, EV_READ|EV_PERSIST, udp_cb, info);
   event_add(&udp_event, 0);
   event_dispatch();
@@ -202,7 +204,7 @@ err:
 }
 
 static void
-udp_cb(const int fd, short event, void *user_data)
+udp_cb(const int fd, short int event, void *user_data)
 {
   fstart("fd: %d, event: %d, user_data: %p", fd, event, user_data);
   int i, rc, rlen, wlen, ret;
@@ -216,15 +218,17 @@ udp_cb(const int fd, short event, void *user_data)
   info = (info_t *)user_data;
   session = NULL;
 
-  rlen = recvfrom(fd, &rbuf, BUF_SIZE, 0, (struct sockaddr *)&sin, &sz);
+  memset(&sin, 0, sizeof(sin));
+  rlen = recvfrom(fd, &rbuf, BUF_SIZE, 0, (struct sockaddr *) &sin, &sz);
   dmsg("recvfrom: fd: %d, sin: %p, sz: %d", fd, &sin, sz);
+
   if (rlen < 0)
   {
     emsg("recvfrom error");
     event_loopbreak();
   }
-  dmsg("rlen: %d", rlen);
-  wlen = sendto(fd, "thanks:)", 7, 0, (struct sockaddr *)&sin, sz);
+  dmsg("rlen: %d, sz: %u", rlen, sz);
+  wlen = sendto(fd, "thanks!", 7, 0, (struct sockaddr *)&sin, sz);
   dmsg("[TEST] wlen: %d", wlen);
   perror("Test");
 
@@ -260,7 +264,7 @@ open_listener(int port)
   sin.sin_addr.s_addr = INADDR_ANY;
   sin.sin_port = htons(port);
 
-  if (bind(sock, (struct sockaddr *)&sin, sizeof(sin)))
+  if (bind(sock, (struct sockaddr *)&sin, sizeof(sin)) < 0)
   {
     emsg("bind error");
     exit(1);
@@ -273,7 +277,7 @@ int
 open_connection(const char *domain, int port)
 {
   fstart("domain: %s, port: %d", domain, port);
-  int sd, ret, sndbuf, rcvbuf, optlen;
+  int sd;
   struct hostent *host;
   struct sockaddr_in addr;
             
@@ -296,18 +300,6 @@ open_connection(const char *domain, int port)
     abort();
   }
   
-  sndbuf = 81920000;
-  ret = setsockopt(sd, SOL_SOCKET, SO_SNDBUF, &sndbuf, sizeof(sndbuf));
-
-  if (ret < 0)
-    printf("Error setsockopt: sndbuf\n");
-
-  rcvbuf = 81920000;
-  ret = setsockopt(sd, SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf));
-
-  if (ret < 0)
-    printf("Error setsockopt: rcvbuf\n");
-
   ffinish("sd: %d", sd);
   return sd;
 }

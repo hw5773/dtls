@@ -108,7 +108,6 @@ main(int argc, char **argv)
   base = event_init();
   event_set(&udp_event, fd, EV_READ|EV_PERSIST, udp_cb, info);
   event_add(&udp_event, 0);
-
   event_dispatch();
 
   finalization();
@@ -187,6 +186,7 @@ udp_cb(const int fd, short int event, void *user_data)
   rlen = wlen = -1;
   ssl = client->ssl;
   rlen = recvfrom(fd, &rbuf, BUF_SIZE, 0, (struct sockaddr *) &sin, &sz);
+
   dmsg("recvfrom: sin: %p, sz: %d", &sin, sz);
   if (rlen == -1)
   {
@@ -212,6 +212,7 @@ udp_cb(const int fd, short int event, void *user_data)
       BIO_write(SSL_get_rbio(ssl), rbuf, rlen);
       SSL_do_handshake(ssl);
       wlen = BIO_read(SSL_get_wbio(ssl), wbuf, BUF_SIZE);
+      dmsg("wlen: %d", wlen);
       if (wlen > 0)
       {
         dmsg("sendto: sin: %p, sz: %d", &sin, sz);
@@ -236,7 +237,7 @@ int open_listener(int port)
   sin.sin_addr.s_addr = INADDR_ANY;
   sin.sin_port = htons(port);
 
-  if (bind(sock, (struct sockaddr *)&sin, sizeof(sin)))
+  if (bind(sock, (struct sockaddr *)&sin, sizeof(sin)) < 0)
   {
     emsg("bind error");
     exit(1);

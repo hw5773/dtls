@@ -171,6 +171,7 @@ void *run(void *data)
   struct sockaddr_in ssin, gsin;
   socklen_t ssz, gsz;
   unsigned char buf[BUF_SIZE];
+  const char *msg = "Delegation";
 	SSL *ssl;
 	SSL_SESSION *session = NULL;
   BIO *b;
@@ -187,7 +188,7 @@ void *run(void *data)
   dmsg("before open connection to gateway");
 	gateway = open_connection(gdomain, gport, &gsin, &gsz);
   dmsg("gsin: %p, gsz: %u", &gsin, gsz);
-  if (sendto(gateway, "Delegation", 10, 0, (struct sockaddr *) &gsin, gsz) < 0)
+  if (sendto(gateway, msg, strlen(msg), 0, (struct sockaddr *) &gsin, gsz) < 0)
   {
     emsg("sendto error");
     abort();
@@ -262,11 +263,18 @@ int open_connection(const char *domain, int port, struct sockaddr_in *addr, sock
   }
     
   sd = socket(PF_INET, SOCK_DGRAM, 0);
-  bzero(addr, sizeof(*addr));
+  bzero(addr, sizeof(struct sockaddr_in));
   addr->sin_family = AF_INET;
   addr->sin_port = htons(port);
   addr->sin_addr.s_addr = *(long*)(host->h_addr);
-  *sz = sizeof(*addr);
+  *sz = sizeof(struct sockaddr_in);
+
+  if (connect(sd, (struct sockaddr *)addr, sizeof(*addr)) != 0)
+  {
+    close(sd);
+    perror(domain);
+    abort();
+  }
 
   ffinish("sd: %d", sd);
   return sd;
