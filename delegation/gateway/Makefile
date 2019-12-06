@@ -14,7 +14,7 @@ BINS=${CLIENT}
 OBJS=${CLIENT_OBJ}
 
 CFLAGS=-I../../include -I/usr/local/include
-LDFLAGS=-L/usr/local/lib -lssl -lcrypto -ldl -lpthread
+LDFLAGS=-L/usr/local/lib -lssl -lcrypto -ldl -lpthread -levent
 
 all: gateway
 

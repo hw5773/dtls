@@ -26,14 +26,15 @@
 
 typedef struct info_st
 {
-  const char *domain;
-  int port;
+  SSL_CTX *ctx;
+  const char *sdomain;
+  int sport;
+  const char *gdomain;
+  int gport;
 } info_t;
 
-SSL_CTX *ctx;
-
 void *run(void *data);
-int open_connection(const char *domain, int port);
+int open_connection(const char *domain, int port, struct sockaddr_in *addr, socklen_t *sz);
 SSL_CTX* init_client_ctx(void);
 void load_certificates(SSL_CTX* ctx, char* cert_file, char* key_file);
 void load_ecdh_params(SSL_CTX *ctx);
@@ -45,8 +46,8 @@ static int char_to_int(uint8_t *str, uint32_t slen);
 int 
 usage(const char *pname)
 {
-  emsg(">> Usage: %s -d <domain> -p <port> -l <log file name>", pname);
-  emsg(">> Example: %s -d www.alice.com -p 5555 -l log", pname);
+  emsg(">> Usage: %s -d <domain> -p <port> -s <gateway domain> -g <gateway port> -l <log file name>", pname);
+  emsg(">> Example: %s -d www.alice.com -p 5555 -s www.gateway.com -g 5556 -l log", pname);
   exit(1);
 }
 
@@ -54,15 +55,18 @@ int
 main(int argc, char *argv[])
 {   
 	int i, rc, num_of_threads;
-  int c, port;
+  int c, sport, gport;
   const char *pname;
-  const char *domain;
+  const char *sdomain, *gdomain;
   const char *lname;
+  SSL_CTX *ctx;
   info_t info;
   
   pname = argv[0];
-  domain = DEFAULT_DOMAIN_NAME;
-  port = DEFAULT_PORT_NUMBER;
+  sdomain = DEFAULT_SERVER_DOMAIN_NAME;
+  sport = DEFAULT_SERVER_PORT_NUMBER;
+  gdomain = DEFAULT_GATEWAY_DOMAIN_NAME;
+  gport = DEFAULT_GATEWAY_PORT_NUMBER;
   num_of_threads = DEFAULT_NUM_THREADS;
   lname = NULL;
 
@@ -72,12 +76,14 @@ main(int argc, char *argv[])
     static struct option long_options[] = {
       {"domain", required_argument, 0, 'd'},
       {"port", required_argument, 0, 'p'}, 
+      {"gateway-domain", required_argument, 0, 's'},
+      {"gateway-port", required_argument, 0, 'g'},
       {"log", required_argument, 0, 'l'},
       {"threads", required_argument, 0, 't'},
       {0, 0, 0, 0}
     };
 
-    c = getopt_long(argc, argv, "d:p:l:0", long_options, &option_index);
+    c = getopt_long(argc, argv, "d:p:l:s:g:t:0", long_options, &option_index);
 
     if (c == -1)
       break;
@@ -88,10 +94,16 @@ main(int argc, char *argv[])
         lname = optarg;
         break;
       case 'd':
-        domain = optarg;
+        sdomain = optarg;
         break;
       case 'p':
-        port = atoi(optarg);
+        sport = atoi(optarg);
+        break;
+      case 's':
+        gdomain = optarg;
+        break;
+      case 'g':
+        gport = atoi(optarg);
         break;
       case 't':
         num_of_threads = atoi(optarg);
@@ -102,12 +114,11 @@ main(int argc, char *argv[])
   }
 
   imsg("Log File Name: %s", lname);
-  imsg("Domain: %s", domain);
-  imsg("Port: %d", port);
+  imsg("Server Domain: %s", sdomain);
+  imsg("Server Port: %d", sport);
+  imsg("Gateway Domain: %s", gdomain);
+  imsg("Gateway Port: %d", gport);
   imsg("Number of Threads: %d", num_of_threads);
-
-  info.domain = domain;
-  info.port = port;
 
   SSL_library_init();
   OpenSSL_add_all_algorithms();
@@ -120,6 +131,12 @@ main(int argc, char *argv[])
 
 	ctx = init_client_ctx();
 	load_ecdh_params(ctx);
+
+  info.ctx = ctx;
+  info.sdomain = sdomain;
+  info.sport = sport;
+  info.gdomain = gdomain;
+  info.gport = gport;
 
 	for (i = 0; i < num_of_threads; i++) {
 		rc = pthread_create(&thread[i], &attr, run, &info);
@@ -149,50 +166,56 @@ main(int argc, char *argv[])
 void *run(void *data)
 {	
   fstart("data: %p", data);
-  const char *domain;
-	int i, port, server, rcvd, sent, ret, dlen, clen, total = 0, offset = 0;
+  const char *sdomain, *gdomain;
+	int i, sport, gport, server, gateway, ret;
+  struct sockaddr_in ssin, gsin;
+  socklen_t ssz, gsz;
   unsigned char buf[BUF_SIZE];
 	SSL *ssl;
 	SSL_SESSION *session = NULL;
-	char request[BUF_SIZE];
-	int rlen;
+  BIO *b;
+	int len;
   info_t *info;
-  
   info = (info_t *)data;
-  domain = info->domain;
-  port = info->port;
+  sdomain = info->sdomain;
+  sport = info->sport;
+  gdomain = info->gdomain;
+  gport = info->gport;
   
-	server = open_connection(domain, port);
-
-  ssl = SSL_new(ctx);   
-  SSL_set_fd(ssl, server);
-  SSL_set_tlsext_host_name(ssl, domain);
-	SSL_set_fd(ssl, server);
-	SSL_set_tlsext_host_name(ssl, domain);
-
-#ifdef SESSION_RESUMPTION
-  if ((ret = SSL_connect(ssl)) < 0)
+  b = BIO_new(BIO_s_mem());
+  ssl = SSL_new(info->ctx);   
+  dmsg("before open connection to gateway");
+	gateway = open_connection(gdomain, gport, &gsin, &gsz);
+  dmsg("gsin: %p, gsz: %u", &gsin, gsz);
+  if (sendto(gateway, "Delegation", 10, 0, (struct sockaddr *) &gsin, gsz) < 0)
   {
-    emsg("Error in SSL_connect");
-    goto err;
+    emsg("sendto error");
+    abort();
   }
-  session = SSL_get1_session(ssl);
-  SSL_shutdown(ssl);
-  SSL_free(ssl);
-  ssl = NULL;
-  close(server);
+  dmsg("send the start message complete");
 
-  server = open_connection(domain, atoi(portnum));
-  ssl = SSL_new(ctx);
-  SSL_enable_seed(ssl);
-  SSL_set_fd(ssl, server);
-  SSL_set_tlsext_host_name(ssl, domain);
-#endif /* SESSION_RESUMPTION */
+  len = recvfrom(gateway, &buf, BUF_SIZE, 0, (struct sockaddr *) &gsin, &gsz);
+  imsg("Recevied SSL Session Length: %d", len);
+
+  server = open_connection(sdomain, sport, &ssin, &ssz);
+	SSL_set_fd(ssl, server);
+	SSL_set_tlsext_host_name(ssl, sdomain);
+
+  BIO_write(b, buf, len);
+  session = PEM_read_bio_SSL_SESSION(b, NULL, NULL, NULL);
 
 	if (session != NULL)
+  {
+    imsg("Succeed to read the SSL session");
 		SSL_set_session(ssl, session);
+  }
+  else
+  {
+    emsg("Failed to read the SSL session");
+    abort();
+  }
 
-	emsg("Set server name: %s", domain);
+	dmsg("Set server name: %s", sdomain);
 
 	imsg("PROGRESS: DTLS Handshake Start");
 
@@ -201,7 +224,14 @@ void *run(void *data)
 		ERR_print_errors_fp(stderr);
 		goto err;
 	} else {
-    imsg("Connected with %s\n", SSL_get_cipher(ssl));
+    if (SSL_session_reused(ssl))
+    {
+      imsg("Succeed to resume the SSL session: Connected with %s", SSL_get_cipher(ssl));
+    }
+    else
+    {
+      emsg("Failed to resume the SSL session: Connected with %s", SSL_get_cipher(ssl));
+    }
     SSL_shutdown(ssl);
 	}
 
@@ -219,12 +249,11 @@ err:
 	return NULL;
 }
 
-int open_connection(const char *domain, int port)
+int open_connection(const char *domain, int port, struct sockaddr_in *addr, socklen_t *sz)
 {
-  fstart("domain: %s, port: %d", domain, port);
-  int sd, ret, sndbuf, rcvbuf, optlen;
+  fstart("domain: %s, port: %d, addr: %p, sz: %p", domain, port, addr, sz);
+  int sd;
   struct hostent *host;
-  struct sockaddr_in addr;
             
   if ( (host = gethostbyname(domain)) == NULL )
   {
@@ -233,29 +262,11 @@ int open_connection(const char *domain, int port)
   }
     
   sd = socket(PF_INET, SOCK_DGRAM, 0);
-  bzero(&addr, sizeof(addr));
-  addr.sin_family = AF_INET;
-  addr.sin_port = htons(port);
-  addr.sin_addr.s_addr = *(long*)(host->h_addr);
-
-  if ( connect(sd, (struct sockaddr*)&addr, sizeof(addr)) != 0 )
-  {
-    close(sd);
-    perror(domain);
-    abort();
-  }
-  
-  sndbuf = 81920000;
-  ret = setsockopt(sd, SOL_SOCKET, SO_SNDBUF, &sndbuf, sizeof(sndbuf));
-
-  if (ret < 0)
-    printf("Error setsockopt: sndbuf\n");
-
-  rcvbuf = 81920000;
-  ret = setsockopt(sd, SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf));
-
-  if (ret < 0)
-    printf("Error setsockopt: rcvbuf\n");
+  bzero(addr, sizeof(*addr));
+  addr->sin_family = AF_INET;
+  addr->sin_port = htons(port);
+  addr->sin_addr.s_addr = *(long*)(host->h_addr);
+  *sz = sizeof(*addr);
 
   ffinish("sd: %d", sd);
   return sd;

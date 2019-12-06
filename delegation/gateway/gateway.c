@@ -17,12 +17,10 @@
 #include <limits.h>
 #include <getopt.h>
 
+#include <event.h>
 #include <defines.h>
 #include <debug.h>
 #include "setting.h"
-
-#define DELIMITER "\r\n"
-#define DELIMITER_LEN 2
 
 typedef struct info_st
 {
@@ -31,9 +29,7 @@ typedef struct info_st
   int port;
 } info_t;
 
-SSL_CTX *ctx;
-
-void *run(void *data);
+void connect_to_server(void *data, unsigned char *buf, int *len);
 int open_listener(int port);
 int open_connection(const char *domain, int port);
 SSL_CTX* init_client_ctx(void);
@@ -44,9 +40,6 @@ int http_make_request(uint8_t *domain, uint32_t dlen, uint8_t *content,
 int http_parse_response(uint8_t *msg, uint32_t mlen);
 static int char_to_int(uint8_t *str, uint32_t slen);
 static void udp_cb(const int fd, short event, void *arg);
-pthread_t thread[num_of_threads];
-pthread_attr_t attr;
-void *status;
 
 int 
 usage(const char *pname)
@@ -74,7 +67,6 @@ main(int argc, char *argv[])
   domain = DEFAULT_DOMAIN_NAME;
   lport = DEFAULT_LISTEN_PORT_NUMBER;
   cport = DEFAULT_CONNECT_PORT_NUMBER;
-  lport = 
   num_of_threads = DEFAULT_NUM_THREADS;
   lname = NULL;
 
@@ -103,7 +95,7 @@ main(int argc, char *argv[])
         domain = optarg;
         break;
       case 'p':
-        port = atoi(optarg);
+        cport = atoi(optarg);
         break;
       case 't':
         num_of_threads = atoi(optarg);
@@ -118,7 +110,6 @@ main(int argc, char *argv[])
   imsg("Connection Port: %d", cport);
   imsg("Number of Threads: %d", num_of_threads);
 
-  initialization();
   SSL_library_init();
   OpenSSL_add_all_algorithms();
 
@@ -132,9 +123,6 @@ main(int argc, char *argv[])
 	ctx = init_client_ctx();
 	load_ecdh_params(ctx);
 
-	pthread_attr_init(&attr);
-	pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_JOINABLE);
-
   info->ctx = ctx;
   info->domain = domain;
   info->port = cport;
@@ -143,42 +131,18 @@ main(int argc, char *argv[])
   event_add(&udp_event, 0);
   event_dispatch();
 
-	for (i = 0; i < num_of_threads; i++) {
-		rc = pthread_create(&thread[i], &attr, run, &info);
-
-		if (rc) {
-			emsg("return code from pthread_create: %d\n", rc);
-			return 1;
-		}
-	}
-
-	pthread_attr_destroy(&attr);
-
-	for (i = 0; i < num_of_threads; i++) {
-		rc = pthread_join(thread[i], &status);
-
-		if (rc) {
-			emsg("return code from pthread_join: %d\n", rc);
-			return 1;
-		}
-	}
-
 	SSL_CTX_free(ctx); /* release context */
 
 	return 0;
 }
 
-void *run(void *data)
+void connect_to_server(void *data, unsigned char *buf, int *len)
 {	
-  fstart("data: %p", data);
+  fstart("data: %p, buf: %p, len: %p", data, buf, len);
   const char *domain;
-	int i, port, server, rcvd, sent, ret, dlen, clen, total = 0, offset = 0;
-  unsigned char buf[BUF_SIZE];
+	int i, port, server, ret;
 	SSL *ssl;
 	SSL_SESSION *session = NULL;
-  SSL_SESSION *test = NULL;
-	char request[BUF_SIZE];
-	int rlen;
   info_t *info;
   BIO *b;
   
@@ -188,7 +152,7 @@ void *run(void *data)
   b = BIO_new(BIO_s_mem());
   
 	server = open_connection(domain, port);
-  ssl = SSL_new(ctx);   
+  ssl = SSL_new(info->ctx);   
   SSL_set_fd(ssl, server);
   SSL_set_tlsext_host_name(ssl, domain);
 
@@ -211,6 +175,8 @@ void *run(void *data)
     {
       imsg("Acquire the SSL session");
       PEM_write_bio_SSL_SESSION(b, session);
+      *len = BIO_read(b, buf, BUF_SIZE);
+      imsg("Length of SSL_SESSION: %d", *len);
     }
     else
     {
@@ -220,39 +186,8 @@ void *run(void *data)
     SSL_free(ssl);
     ssl = NULL;
     close(server);
+  }
     
-    test = PEM_read_bio_SSL_SESSION(b, NULL, NULL, NULL);
-    if (test)
-    {
-      imsg("Succeed to read the SSL session");
-
-    }
-    else
-    {
-      imsg("Failed to read the SSL session");
-      abort();
-    }
-
-    server = open_connection(domain, port);
-    ssl = SSL_new(ctx);
-    SSL_set_fd(ssl, server);
-    SSL_set_tlsext_host_name(ssl, domain);
-
-    if (session)
-    {
-      imsg("Set the SSL session to the SSL context");
-      SSL_set_session(ssl, session);
-    }
-
-    if ((ret = SSL_connect(ssl)) < 0)
-    {
-      emsg("Failed to connect: %d", ret);
-      ERR_print_errors_fp(stderr);
-      goto err;
-    }
-    imsg("Succeed to resume the SSL session");
-	}
-
 err: 
   if (!session)
 		SSL_SESSION_free(session);
@@ -264,13 +199,54 @@ err:
 		close(server);
 
   ffinish();
-	return NULL;
 }
 
 static void
 udp_cb(const int fd, short event, void *user_data)
 {
+  fstart("fd: %d, event: %d, user_data: %p", fd, event, user_data);
+  int i, rc, rlen, wlen, ret;
+  info_t *info;
+  unsigned char rbuf[BUF_SIZE] = {0, };
+  unsigned char wbuf[BUF_SIZE] = {0, };
+  SSL_SESSION *session;
+  struct sockaddr_in sin;
+  socklen_t sz;
 
+  info = (info_t *)user_data;
+  session = NULL;
+
+  rlen = recvfrom(fd, &rbuf, BUF_SIZE, 0, (struct sockaddr *)&sin, &sz);
+  dmsg("recvfrom: fd: %d, sin: %p, sz: %d", fd, &sin, sz);
+  if (rlen < 0)
+  {
+    emsg("recvfrom error");
+    event_loopbreak();
+  }
+  dmsg("rlen: %d", rlen);
+  wlen = sendto(fd, "thanks:)", 7, 0, (struct sockaddr *)&sin, sz);
+  dmsg("[TEST] wlen: %d", wlen);
+  perror("Test");
+
+  if (rlen > 0)
+  {
+    imsg("Received message: %s", rbuf);
+    connect_to_server(info, wbuf, &wlen);
+    dmsg("Length of the SSL Session: %d bytes", wlen);
+
+    if (wlen > 0)
+    {
+      dmsg("sendto: fd: %d, wbuf: %p, wlen: %d, sin: %p, sizeof(sin): %lu, sz: %d", fd, wbuf, wlen, &sin, sizeof(struct sockaddr_in), sz);
+      if (sendto(fd, wbuf, wlen, 0, (struct sockaddr *)&sin, sz) < 0)
+      {
+        emsg("sendto error: %d", errno);
+        perror("sendto");
+        event_loopbreak();
+      }
+    }
+  }
+
+  ffinish();
 }
 
 int 

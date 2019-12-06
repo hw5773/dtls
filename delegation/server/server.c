@@ -187,6 +187,7 @@ udp_cb(const int fd, short int event, void *user_data)
   rlen = wlen = -1;
   ssl = client->ssl;
   rlen = recvfrom(fd, &rbuf, BUF_SIZE, 0, (struct sockaddr *) &sin, &sz);
+  dmsg("recvfrom: sin: %p, sz: %d", &sin, sz);
   if (rlen == -1)
   {
     emsg("recvfrom error");
@@ -213,6 +214,7 @@ udp_cb(const int fd, short int event, void *user_data)
       wlen = BIO_read(SSL_get_wbio(ssl), wbuf, BUF_SIZE);
       if (wlen > 0)
       {
+        dmsg("sendto: sin: %p, sz: %d", &sin, sz);
         if (sendto(fd, wbuf, wlen, 0, (struct sockaddr *) &sin, sz) == -1)
         {
           emsg("sendto error");
