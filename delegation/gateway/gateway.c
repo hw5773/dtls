@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <stdlib.h>
 #include <errno.h>
 #include <unistd.h>
 #include <malloc.h>
@@ -10,6 +11,7 @@
 #include <openssl/evp.h>
 #include <openssl/err.h>
 #include <sys/time.h>
+#include <sys/types.h>
 #ifndef _WIN32
 #include <netinet/in.h>
 #ifdef _XOPEN_SOURCE_EXTENDED
@@ -219,7 +221,7 @@ udp_cb(const int fd, short int event, void *user_data)
   session = NULL;
 
   memset(&sin, 0, sizeof(sin));
-  rlen = recvfrom(fd, &rbuf, BUF_SIZE, 0, (struct sockaddr *) &sin, &sz);
+  rlen = recvfrom(fd, &rbuf, BUF_SIZE, MSG_WAITALL, (struct sockaddr *) &sin, &sz);
   dmsg("recvfrom: fd: %d, sin: %p, sz: %d", fd, &sin, sz);
 
   if (rlen < 0)
@@ -228,7 +230,7 @@ udp_cb(const int fd, short int event, void *user_data)
     event_loopbreak();
   }
   dmsg("rlen: %d, sz: %u", rlen, sz);
-  wlen = sendto(fd, "thanks!", 7, 0, (struct sockaddr *)&sin, sz);
+  wlen = sendto(fd, "thanks!", 7, MSG_CONFIRM, (struct sockaddr *)&sin, sz);
   dmsg("[TEST] wlen: %d", wlen);
   perror("Test");
 
@@ -241,12 +243,12 @@ udp_cb(const int fd, short int event, void *user_data)
     if (wlen > 0)
     {
       dmsg("sendto: fd: %d, wbuf: %p, wlen: %d, sin: %p, sizeof(sin): %lu, sz: %d", fd, wbuf, wlen, &sin, sizeof(struct sockaddr_in), sz);
-      if (sendto(fd, wbuf, wlen, 0, (struct sockaddr *)&sin, sz) < 0)
+      if (sendto(fd, wbuf, wlen, MSG_CONFIRM, (struct sockaddr *)&sin, sz) < 0)
       {
         emsg("sendto error: %d", errno);
         perror("sendto");
         event_loopbreak();
-      }
+      } 
     }
   }
 
@@ -256,13 +258,27 @@ udp_cb(const int fd, short int event, void *user_data)
 int 
 open_listener(int port)
 {
-  int sock;
+  fstart("port: %d", port);
+  int sock, option;
   struct sockaddr_in sin;
-  sock = socket(AF_INET, SOCK_DGRAM, 0);
+
+  option = 1;
+
+  if ((sock = socket(AF_INET, SOCK_DGRAM, 0)) < 0)
+  {
+    perror("socket creation failed");
+    exit(1);
+  }
+
   memset(&sin, 0, sizeof(sin));
   sin.sin_family = AF_INET;
   sin.sin_addr.s_addr = INADDR_ANY;
   sin.sin_port = htons(port);
+
+  if (setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, (const void *)&option, sizeof(option)) < 0)
+  {
+    emsg("setsockopt error");
+  }
 
   if (bind(sock, (struct sockaddr *)&sin, sizeof(sin)) < 0)
   {
@@ -270,6 +286,7 @@ open_listener(int port)
     exit(1);
   }
 
+  ffinish("sock: %d", sock);
   return sock;
 }
 

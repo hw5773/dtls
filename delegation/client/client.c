@@ -188,14 +188,14 @@ void *run(void *data)
   dmsg("before open connection to gateway");
 	gateway = open_connection(gdomain, gport, &gsin, &gsz);
   dmsg("gsin: %p, gsz: %u", &gsin, gsz);
-  if (sendto(gateway, msg, strlen(msg), 0, (struct sockaddr *) &gsin, gsz) < 0)
+  if (sendto(gateway, msg, strlen(msg), MSG_CONFIRM, (struct sockaddr *) &gsin, gsz) < 0)
   {
     emsg("sendto error");
     abort();
   }
   dmsg("send the start message complete");
 
-  len = recvfrom(gateway, &buf, BUF_SIZE, 0, (struct sockaddr *) &gsin, &gsz);
+  len = recvfrom(gateway, &buf, BUF_SIZE, MSG_WAITALL, (struct sockaddr *) &gsin, &gsz);
   imsg("Recevied SSL Session Length: %d", len);
 
   server = open_connection(sdomain, sport, &ssin, &ssz);
