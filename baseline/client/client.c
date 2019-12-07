@@ -21,9 +21,6 @@
 #include <debug.h>
 #include "setting.h"
 
-#define DELIMITER "\r\n"
-#define DELIMITER_LEN 2
-
 typedef struct info_st
 {
   const char *domain;
@@ -36,7 +33,7 @@ static clock_t end = 0;
 
 void *run(void *data);
 int open_connection(const char *domain, int port);
-SSL_CTX* init_client_ctx(void);
+SSL_CTX* init_client_ctx(const char *cert, const char *key);
 void load_certificates(SSL_CTX* ctx, char* cert_file, char* key_file);
 void load_ecdh_params(SSL_CTX *ctx);
 int http_make_request(uint8_t *domain, uint32_t dlen, uint8_t *content,
@@ -60,12 +57,16 @@ main(int argc, char *argv[])
   const char *pname;
   const char *domain;
   const char *lname;
+  const char *cert;
+  const char *key;
   info_t info;
   
   pname = argv[0];
   domain = DEFAULT_DOMAIN_NAME;
   port = DEFAULT_PORT_NUMBER;
   num_of_threads = DEFAULT_NUM_THREADS;
+  cert = DEFAULT_CLIENT_CERT_PATH;
+  key = DEFAULT_CLIENT_KEY_PATH;
   lname = NULL;
 
   while (1)
@@ -76,10 +77,12 @@ main(int argc, char *argv[])
       {"port", required_argument, 0, 'p'}, 
       {"log", required_argument, 0, 'l'},
       {"threads", required_argument, 0, 't'},
+      {"cert", required_argument, 0, 'c'},
+      {"key", required_argument, 0, 'k'},
       {0, 0, 0, 0}
     };
 
-    c = getopt_long(argc, argv, "d:p:l:0", long_options, &option_index);
+    c = getopt_long(argc, argv, "d:p:l:t:c:k:0", long_options, &option_index);
 
     if (c == -1)
       break;
@@ -98,6 +101,12 @@ main(int argc, char *argv[])
       case 't':
         num_of_threads = atoi(optarg);
         break;
+      case 'c':
+        cert = optarg;
+        break;
+      case 'k':
+        key = optarg;
+        break;
       default:
         usage(pname);
     }
@@ -107,6 +116,8 @@ main(int argc, char *argv[])
   imsg("Domain: %s", domain);
   imsg("Port: %d", port);
   imsg("Number of Threads: %d", num_of_threads);
+  imsg("Certificate: %s", cert);
+  imsg("Private Key: %s", key);
 
   info.domain = domain;
   info.port = port;
@@ -120,7 +131,7 @@ main(int argc, char *argv[])
 	pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_JOINABLE);
 	void *status;
 
-	ctx = init_client_ctx();
+	ctx = init_client_ctx(cert, key);
 	load_ecdh_params(ctx);
 
 	for (i = 0; i < num_of_threads; i++) {
@@ -265,15 +276,44 @@ int open_connection(const char *domain, int port)
   return sd;
 }
 
-SSL_CTX* init_client_ctx(void) 
+SSL_CTX* init_client_ctx(const char *cert, const char *key) 
 {
   fstart();
 	SSL_METHOD *method;
 	SSL_CTX *ctx;
+  EC_KEY *ecdh;
 
 	SSL_load_error_strings(); /* Bring in and register error messages */
 	method = (SSL_METHOD *) DTLSv1_2_client_method(); /* Create new client-method instance */
 	ctx = SSL_CTX_new(method); /* Create new context */
+
+  if (SSL_CTX_use_certificate_file(ctx, cert, SSL_FILETYPE_PEM) <= 0)
+  {
+    emsg("SSL_CTX_use_certificate_file error");
+    abort();
+  }
+  imsg("SSL_CTX_use_certificate_file success");
+
+  if (SSL_CTX_use_PrivateKey_file(ctx, key, SSL_FILETYPE_PEM) <= 0)
+  {
+    emsg("SSL_CTX_use_PrivateKey_file error");
+    abort();
+  }
+  imsg("SSL_CTX_use_PrivateKey_file success");
+
+  ecdh = EC_KEY_new_by_curve_name(NID_X9_62_prime256v1);
+  if (!ecdh)
+  {
+    emsg("Set ECDH error");
+    abort();
+  }
+
+  if (SSL_CTX_set_tmp_ecdh(ctx, ecdh) != 1)
+  {
+    emsg("SSL_CTX_set_tmp_ecdh error");
+    abort();
+  }
+  imsg("Set ECDH success");
 
 	if (ctx == NULL) {
 		ERR_print_errors_fp(stderr);

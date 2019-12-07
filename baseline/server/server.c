@@ -211,7 +211,7 @@ udp_cb(const int fd, short int event, void *user_data)
       BIO_write(SSL_get_rbio(ssl), rbuf, rlen);
       SSL_do_handshake(ssl);
       wlen = BIO_read(SSL_get_wbio(ssl), wbuf, BUF_SIZE);
-      dmsg("length to write: %ld", wlen);
+      dmsg("length to write: %d", wlen);
       if (wlen > 0)
       {
         if (sendto(fd, wbuf, wlen, 0, (struct sockaddr *) &sin, sz) == -1)
@@ -293,6 +293,7 @@ init_server_ctx(const char *cert, const char *key)
   }
 
   SSL_CTX_set_session_cache_mode(ret, SSL_SESS_CACHE_BOTH);
+  SSL_CTX_set_verify(ret, SSL_VERIFY_PEER|SSL_VERIFY_FAIL_IF_NO_PEER_CERT, NULL);
 
   ffinish();
   return ret;
