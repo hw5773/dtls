@@ -202,6 +202,9 @@ udp_cb(const int fd, short int event, void *user_data)
     {
       end = clock();
       imsg("DTLS session is established: %lf ms", ((double) (end - start) * 1000)/CLOCKS_PER_SEC);
+      SSL_shutdown(ssl);
+      free_client_ctx(info->client);
+      info->client = NULL;
     }
     else
     {
