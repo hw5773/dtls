@@ -209,7 +209,7 @@ static void
 udp_cb(const int fd, short int event, void *user_data)
 {
   fstart("fd: %d, event: %d, user_data: %p", fd, event, user_data);
-  int i, rc, rlen, wlen, ret;
+  int i, rc, rlen, wlen, ret, port;
   info_t *info;
   unsigned char rbuf[BUF_SIZE] = {0, };
   unsigned char wbuf[BUF_SIZE] = {0, };
@@ -222,7 +222,8 @@ udp_cb(const int fd, short int event, void *user_data)
 
   memset(&sin, 0, sizeof(sin));
   rlen = recvfrom(fd, &rbuf, BUF_SIZE, MSG_WAITALL, (struct sockaddr *) &sin, &sz);
-  dmsg("recvfrom: fd: %d, sin: %p, sz: %d", fd, &sin, sz);
+  port = ntohs(sin.sin_port);
+  dmsg("recvfrom: fd: %d, sin: %p, sz: %d, port: %d", fd, &sin, sz, port);
 
   if (rlen < 0)
   {
@@ -230,11 +231,8 @@ udp_cb(const int fd, short int event, void *user_data)
     event_loopbreak();
   }
   dmsg("rlen: %d, sz: %u", rlen, sz);
-  wlen = sendto(fd, "thanks!", 7, MSG_CONFIRM, (struct sockaddr *)&sin, sz);
-  dmsg("[TEST] wlen: %d", wlen);
-  perror("Test");
-
-  if (rlen > 0)
+  
+  if (rlen > 0 && port > 0)
   {
     imsg("Received message: %s", rbuf);
     connect_to_server(info, wbuf, &wlen);

@@ -33,6 +33,9 @@ typedef struct info_st
   int gport;
 } info_t;
 
+static clock_t start = 0;
+static clock_t end = 0;
+
 void *run(void *data);
 int open_connection(const char *domain, int port, struct sockaddr_in *addr, socklen_t *sz);
 SSL_CTX* init_client_ctx(void);
@@ -188,13 +191,24 @@ void *run(void *data)
   dmsg("before open connection to gateway");
 	gateway = open_connection(gdomain, gport, &gsin, &gsz);
   dmsg("gsin: %p, gsz: %u", &gsin, gsz);
+
+  // I don't know why this message is needed. May be the problem in libevent
   if (sendto(gateway, msg, strlen(msg), MSG_CONFIRM, (struct sockaddr *) &gsin, gsz) < 0)
   {
     emsg("sendto error");
     abort();
   }
   dmsg("send the start message complete");
+  sleep(1);
 
+  start = clock();
+  if (sendto(gateway, msg, strlen(msg), MSG_CONFIRM, (struct sockaddr *) &gsin, gsz) < 0)
+  {
+    emsg("sendto error");
+    abort();
+  }
+  dmsg("send the request message complete");
+ 
   len = recvfrom(gateway, &buf, BUF_SIZE, MSG_WAITALL, (struct sockaddr *) &gsin, &gsz);
   imsg("Recevied SSL Session Length: %d", len);
 
@@ -227,12 +241,16 @@ void *run(void *data)
 	} else {
     if (SSL_session_reused(ssl))
     {
-      imsg("Succeed to resume the SSL session: Connected with %s", SSL_get_cipher(ssl));
+      imsg("Succeed to resume the SSL session");
+      end = clock();
     }
     else
     {
       emsg("Failed to resume the SSL session: Connected with %s", SSL_get_cipher(ssl));
+      end = start;
+
     }
+    imsg("Connected with %s: %lf ms", SSL_get_cipher(ssl), ((double)(end - start) * 1000)/CLOCKS_PER_SEC);
     SSL_shutdown(ssl);
 	}
 
