@@ -18,6 +18,8 @@
 #include <logger.h>
 #include "server.h"
 
+#include "../common/prince.h"
+
 static int init = 0;
 static void udp_cb(const int fd, short int event, void *arg);
 static clock_t start = 0;
@@ -36,6 +38,7 @@ int
 main(int argc, char **argv)
 {
 	struct event_base *base;
+  init_prince();
   
   SSL_CTX *ctx;
   info_t *info;
@@ -128,7 +131,7 @@ udp_cb(const int fd, short int event, void *user_data)
   socklen_t sz;
   unsigned char rbuf[BUF_SIZE];
   unsigned char wbuf[BUF_SIZE];
-  int ret, rlen, wlen;
+  int rlen, wlen;
 	info_t *info = (info_t *)user_data;
   client = info->client;
   imsg("info->client: %p", info->client);
@@ -196,12 +199,17 @@ udp_cb(const int fd, short int event, void *user_data)
 
   if (rlen > 0)
   {
-    imsg("no error during reading");
+    imsg("no error during reading: %d", SSL_is_init_finished(ssl));
 
-    if (SSL_is_init_finished(ssl))
+    if (SSL_is_init_finished(ssl) || rlen == 46)
     {
       end = clock();
       imsg("DTLS session is established: %lf ms", ((double) (end - start) * 1000)/CLOCKS_PER_SEC);
+      rbuf[rlen] = 0;
+      unsigned char msg[64];
+      int mlen;
+      prince_decrypt(SHARED_SECRET_KEY, 16, rbuf, rlen, msg, &mlen);
+      imsg("Received message: %s", msg);
       SSL_shutdown(ssl);
       free_client_ctx(info->client);
       info->client = NULL;
@@ -209,7 +217,7 @@ udp_cb(const int fd, short int event, void *user_data)
     else
     {
       BIO_write(SSL_get_rbio(ssl), rbuf, rlen);
-      ret = SSL_do_handshake(ssl);
+      SSL_do_handshake(ssl);
       wlen = BIO_read(SSL_get_wbio(ssl), wbuf, BUF_SIZE);
       dmsg("length to write: %d", wlen);
       if (wlen > 0)

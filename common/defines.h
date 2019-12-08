@@ -5,5 +5,6 @@
 #define MAX_THREADS 100
 
 #define BUF_SIZE 4096
+#define TEST_MESSAGE "Test Msg"
 
 #endif /* __DEFINES_H__ */
